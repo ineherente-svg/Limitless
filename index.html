@@ -950,11 +950,17 @@
   .fin-wishlist-card{background:var(--card);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
   .fin-wishlist-head{display:flex;align-items:center;gap:10px;padding:14px 18px;cursor:pointer;color:var(--muted-2);transition:.13s}
   .fin-wishlist-head:hover{background:var(--panel-2);color:var(--ink-soft)}
-  .fin-wishlist-title{font-size:13px;font-weight:650;flex:1}
+  .fin-wishlist-title{font-size:13px;font-weight:650;flex:1;display:flex;align-items:center;gap:6px}
   .fin-wishlist-total{font-size:13px;font-weight:700;color:var(--ink-soft);font-variant-numeric:tabular-nums}
   .fin-wishlist-chevron{transition:transform .2s;flex-shrink:0}
   .fin-wishlist-chevron.open{transform:rotate(180deg)}
   .fin-wishlist-body{padding:0 18px 16px;border-top:1px solid var(--line)}
+
+  .fin-info-ico{width:16px;height:16px;border-radius:50%;border:1px solid var(--line-strong);display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-style:italic;font-family:Georgia,serif;color:var(--muted-2);background:var(--panel-2);flex-shrink:0;cursor:help;user-select:none;transition:.13s}
+  .fin-info-ico:hover{background:var(--accent-bg);color:var(--accent);border-color:var(--accent)}
+  .fin-info-pop{position:fixed;z-index:500;width:230px;padding:10px 12px;border-radius:10px;background:var(--emph);color:var(--on-emph);font-size:12px;line-height:1.45;font-weight:500;font-style:normal;box-shadow:0 8px 24px rgba(0,0,0,.28);border:1px solid var(--line-strong);display:none}
+  [data-theme="dark"] .fin-info-pop{background:#161616;color:var(--ink)}
+  .fin-info-pop.show{display:block}
 
   /* ===== BALANCE: una sola medida por categoria ===== */
   .snap-bal-row{display:flex;align-items:flex-start;gap:14px;padding:16px 18px;border-radius:14px;background:var(--card);box-shadow:var(--shadow);flex-wrap:wrap;margin-bottom:8px}
@@ -4204,6 +4210,54 @@ function accountLabel(fin,accountId){
   return acc ? acc.name : null;
 }
 
+// ---- Ícono "i" con popover explicativo (tap o hover) para las cabeceras de Finanzas ----
+function ensureFinInfoPop(){
+  let pop = document.getElementById("finInfoPop");
+  if(!pop){
+    pop = document.createElement("div");
+    pop.id = "finInfoPop";
+    pop.className = "fin-info-pop";
+    document.body.appendChild(pop);
+  }
+  return pop;
+}
+function finInfoPosition(pop,icoEl){
+  const r = icoEl.getBoundingClientRect();
+  const popW = 230;
+  let left = Math.max(10, Math.min(r.left + r.width/2 - popW/2, window.innerWidth - popW - 10));
+  let top = r.bottom + 8;
+  if(top + 90 > window.innerHeight) top = Math.max(10, r.top - 90 - 8);
+  pop.style.left = left+"px";
+  pop.style.top = top+"px";
+}
+function finInfoShow(icoEl){
+  const pop = ensureFinInfoPop();
+  pop.textContent = icoEl.dataset.tip||"";
+  pop.classList.add("show");
+  finInfoPosition(pop,icoEl);
+}
+function finInfoHide(){
+  const pop = document.getElementById("finInfoPop");
+  if(pop) pop.classList.remove("show");
+}
+function bindFinInfoIcons(){
+  document.querySelectorAll(".fin-info-ico").forEach(el=>{
+    el.onclick=(e)=>{
+      e.stopPropagation();
+      const pinnedOnThis = window._finInfoPinnedEl===el && document.getElementById("finInfoPop")?.classList.contains("show");
+      if(pinnedOnThis){ finInfoHide(); window._finInfoPinnedEl=null; }
+      else { finInfoShow(el); window._finInfoPinnedEl=el; }
+    };
+    el.onmouseenter=()=>{ if(!window._finInfoPinnedEl) finInfoShow(el); };
+    el.onmouseleave=()=>{ if(!window._finInfoPinnedEl) finInfoHide(); };
+  });
+  if(!window._finInfoDocBound){
+    window._finInfoDocBound = true;
+    document.addEventListener("click",()=>{ finInfoHide(); window._finInfoPinnedEl=null; });
+    window.addEventListener("scroll",()=>{ finInfoHide(); window._finInfoPinnedEl=null; },true);
+  }
+}
+
 // Actividad mensual por cuenta: qué fuentes depositan y qué suscripciones cargan a cada cuenta.
 function computeAccountsActivity(fin, monthDeps){
   return fin.accounts.map(acc=>{
@@ -4247,11 +4301,8 @@ function renderFinanzas(){
   const month=getFinMonth();
   const monthLabel=(m)=>{const[y,mo]=m.split("-");const names=["","Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];return names[+mo]+" "+y;};
   const chev=(open)=>`<svg style="transition:transform .2s;${open?'transform:rotate(180deg)':''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M6 9l6 6 6-6"/></svg>`;
-  const cardHead=(id,emoji,title,sub,total,open)=>`<div class="fin-wishlist-head" id="${id}">
-      <div style="flex:1;min-width:0">
-        <div class="fin-wishlist-title">${emoji} ${title}</div>
-        <div style="font-size:11px;color:var(--muted);font-weight:400;margin-top:2px">${sub}</div>
-      </div>
+  const cardHead=(id,emoji,title,tip,total,open)=>`<div class="fin-wishlist-head" id="${id}">
+      <span class="fin-wishlist-title">${emoji} ${title} <span class="fin-info-ico" data-tip="${esc(tip)}">i</span></span>
       <span class="fin-wishlist-total">${total}</span>${chev(open)}
     </div>`;
 
@@ -4458,6 +4509,9 @@ function renderFinanzas(){
   // WISH
   document.getElementById("addWishBtn")?.addEventListener("click",()=>openWishlistModal());
   document.querySelectorAll("[data-wishid]").forEach(el=>el.onclick=()=>openWishlistModal(fin.wishlist.find(w=>w.id===el.dataset.wishid)));
+
+  // INFO ICONS (tap o hover)
+  bindFinInfoIcons();
 }
 
 // ---- MODALS ----
