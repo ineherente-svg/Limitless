@@ -4183,20 +4183,38 @@ async function mentorCallGemini(apiKey, sysPrompt, history){
 function ensureFinanzas(){
   if(!state.finanzas) state.finanzas = {};
   const f = state.finanzas;
-  if(!f.sources) f.sources = [];         // {id, name} — fuentes de ingreso (Inherente, RCL, etc)
+  if(!f.sources) f.sources = [];         // {id, name, accountId?} — fuentes de ingreso (Inherente, RCL, etc)
   if(!f.deposits) f.deposits = [];       // {id, date, amount, sourceId, note}
   if(!f.expenses) f.expenses = [];       // {id, date, amount, category, description}
   if(!f.budget) f.budget = [];           // {id, category, amount} — presupuesto mensual por cat
   if(!f.loans) f.loans = [];
-  if(!f.subscriptions) f.subscriptions = [];
+  if(!f.subscriptions) f.subscriptions = []; // {id, name, amount, active, accountId?}
   if(!f.wishlist) f.wishlist = [];
   if(!f.dreams) f.dreams = [];
   if(!f.categories) f.categories = ["Comida","Transporte","Salidas","Gym/Deporte","Salud","Ropa","Hogar","Educación","Tecnología","Otro"];
   if(!f.savings) f.savings = [];         // {id, date, amount, note} — depósitos inmovilizados
+  if(!f.accounts) f.accounts = [];       // {id, name, note} — cuentas reales (banco, efectivo…) que conectan fuentes y suscripciones
   return f;
 }
 
 function fmtMoney(n){ return "Q"+(+n||0).toLocaleString(); }
+
+function accountLabel(fin,accountId){
+  const acc = fin.accounts.find(a=>a.id===accountId);
+  return acc ? acc.name : null;
+}
+
+// Actividad mensual por cuenta: qué fuentes depositan y qué suscripciones cargan a cada cuenta.
+function computeAccountsActivity(fin, monthDeps){
+  return fin.accounts.map(acc=>{
+    const srcs = fin.sources.filter(s=>s.accountId===acc.id);
+    const srcIds = new Set(srcs.map(s=>s.id));
+    const inflow = monthDeps.filter(d=>srcIds.has(d.sourceId)).reduce((s,d)=>s+(+d.amount||0),0);
+    const subs = fin.subscriptions.filter(s=>s.accountId===acc.id && s.active!==false);
+    const outflow = subs.reduce((s,x)=>s+(+x.amount||0),0);
+    return {account:acc, sources:srcs, subs, inflow, outflow, net:inflow-outflow};
+  });
+}
 
 function getFinMonth(){
   if(!window._finMonth){
@@ -4224,11 +4242,35 @@ function syncFinanzasYCalcularTotales(){
 
 function renderFinanzas(){
   const {fin,totalIncome,totalSpent,totalSubs,totalBudget,disponible,byCategory,monthDeps,monthExps}=syncFinanzasYCalcularTotales();
-  if(typeof window.finOpen==="undefined") window.finOpen={income:true,expenses:false,budget:false,savings:false,loans:false,subs:false,wish:false};
+  if(typeof window.finOpen==="undefined") window.finOpen={accounts:true,income:false,expenses:false,savings:false,loans:false,subs:false,wish:false};
   const o=window.finOpen;
   const month=getFinMonth();
   const monthLabel=(m)=>{const[y,mo]=m.split("-");const names=["","Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];return names[+mo]+" "+y;};
   const chev=(open)=>`<svg style="transition:transform .2s;${open?'transform:rotate(180deg)':''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M6 9l6 6 6-6"/></svg>`;
+  const cardHead=(id,emoji,title,sub,total,open)=>`<div class="fin-wishlist-head" id="${id}">
+      <div style="flex:1;min-width:0">
+        <div class="fin-wishlist-title">${emoji} ${title}</div>
+        <div style="font-size:11px;color:var(--muted);font-weight:400;margin-top:2px">${sub}</div>
+      </div>
+      <span class="fin-wishlist-total">${total}</span>${chev(open)}
+    </div>`;
+
+  // ---- CUENTAS (interconecta fuentes de ingreso y suscripciones) ----
+  const accountsActivity = computeAccountsActivity(fin, monthDeps);
+  const accountsHTML = fin.accounts.length ? accountsActivity.map(({account,sources,subs,inflow,outflow,net})=>`
+    <div style="margin-bottom:12px;padding:12px;border-radius:10px;background:var(--panel);border:1px solid var(--line)">
+      <div data-accid="${account.id}" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer">
+        <div>
+          <div style="font-weight:700;font-size:13px">${esc(account.name)}</div>
+          ${account.note?`<div style="font-size:10.5px;color:var(--muted)">${esc(account.note)}</div>`:''}
+        </div>
+        <span style="font-size:14px;font-weight:700;color:${net>=0?'var(--accent)':'#ef4444'}">${fmtMoney(net)}<span style="font-size:10px;color:var(--muted);font-weight:500"> /mes</span></span>
+      </div>
+      ${(sources.length||subs.length)?`<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);display:flex;flex-direction:column;gap:4px">
+        ${sources.map(s=>`<div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--muted-2)">↳ ${esc(s.name)}</span><span style="color:#22c55e">+${fmtMoney((monthDeps.filter(d=>d.sourceId===s.id)).reduce((a,d)=>a+(+d.amount||0),0))}</span></div>`).join('')}
+        ${subs.map(s=>`<div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--muted-2)">↳ ${esc(s.name)}</span><span style="color:#ef4444">-${fmtMoney(s.amount)}</span></div>`).join('')}
+      </div>`:`<div style="margin-top:8px;font-size:11px;color:var(--muted)">Sin fuentes ni suscripciones conectadas todavía. Edítala desde una fuente de ingreso o suscripción.</div>`}
+    </div>`).join('') : '<div style="color:var(--muted);font-size:12px;padding:8px 0">Aún no tienes cuentas. Crea una (ej. "Diversión / Personal") y luego conéctala a tus fuentes de ingreso y suscripciones para ver aquí su actividad junta.</div>';
 
   // ---- INGRESOS por fuente ----
   const srcGroups = {};
@@ -4236,9 +4278,10 @@ function renderFinanzas(){
   const incomeHTML = fin.sources.length ? fin.sources.map(src=>{
     const deps = (srcGroups[src.id]||[]).sort((a,b)=>b.date.localeCompare(a.date));
     const srcTotal = deps.reduce((s,d)=>s+(+d.amount||0),0);
+    const accName = accountLabel(fin,src.accountId);
     return `<div style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span style="font-weight:700;font-size:13px">${esc(src.name)}</span>
+        <span style="font-weight:700;font-size:13px;cursor:pointer" data-srcid="${src.id}">${esc(src.name)}${accName?` <span style="font-size:10px;font-weight:600;color:var(--accent);background:var(--accent-bg);padding:1px 6px;border-radius:4px">${esc(accName)}</span>`:''}</span>
         <span style="font-size:13px;color:#22c55e;font-weight:600">${fmtMoney(srcTotal)}</span>
       </div>
       ${deps.map(d=>`<div class="fin-budget-row" data-depid="${d.id}" style="cursor:pointer;padding:6px 0">
@@ -4251,17 +4294,17 @@ function renderFinanzas(){
   }).join('') : '<div style="color:var(--muted);font-size:12px;padding:8px 0">Crea tus fuentes de ingreso primero.</div>';
   const unsourced = (srcGroups["_sin"]||[]);
 
-  // ---- GASTOS por categoría ----
+  // ---- GASTOS por categoría (el presupuesto vive integrado aquí) ----
   const catSorted = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
   const gastosHTML = catSorted.length ? catSorted.map(([cat,amt])=>{
     const budgeted = fin.budget.find(b=>b.category===cat);
     const limit = budgeted ? budgeted.amount : 0;
     const pct = limit>0 ? Math.min(100,Math.round(amt/limit*100)) : 0;
     const over = limit>0 && amt>limit;
-    return `<div style="margin-bottom:8px">
+    return `<div data-budcat="${esc(cat)}" style="margin-bottom:8px;cursor:pointer">
       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
         <span style="font-weight:600">${esc(cat)}</span>
-        <span style="color:${over?'#ef4444':'var(--ink)'}">${fmtMoney(amt)}${limit?' / '+fmtMoney(limit):''}</span>
+        <span style="color:${over?'#ef4444':'var(--ink)'}">${fmtMoney(amt)}${limit?' / '+fmtMoney(limit):' — sin presupuesto'}</span>
       </div>
       ${limit?`<div class="dash-bar"><div class="dash-bar-fill" style="width:${pct}%;background:${over?'#ef4444':'var(--accent)'}"></div></div>`:''}
     </div>`;
@@ -4275,16 +4318,6 @@ function renderFinanzas(){
       <span class="fb-amt" style="color:#ef4444;font-size:12px">-${fmtMoney(e.amount)}</span>
     </div>`).join('');
 
-  // ---- PRESUPUESTO ----
-  const budgetHTML = fin.budget.length ? fin.budget.map(b=>{
-    const spent = byCategory[b.category]||0;
-    const pct = b.amount>0 ? Math.min(100,Math.round(spent/b.amount*100)) : 0;
-    return `<div class="fin-budget-row" data-budid="${b.id}" style="cursor:pointer">
-      <span class="fb-name">${esc(b.category)}</span>
-      <div class="dash-bar" style="flex:1;max-width:80px"><div class="dash-bar-fill" style="width:${pct}%;background:${spent>b.amount?'#ef4444':'var(--accent)'}"></div></div>
-      <span class="fb-amt">${fmtMoney(spent)} / ${fmtMoney(b.amount)}</span>
-    </div>`;
-  }).join('') : '<div style="color:var(--muted);font-size:12px;padding:8px 0">Define cuánto quieres gastar por categoría.</div>';
 
   // ---- PRÉSTAMOS ----
   const loanRows = fin.loans.map(l=>`<div class="fin-budget-row" data-loanid="${l.id}" style="cursor:pointer">
@@ -4294,10 +4327,13 @@ function renderFinanzas(){
   </div>`).join('');
 
   // ---- SUBS ----
-  const subRows = fin.subscriptions.map(s=>`<div class="fin-budget-row" data-subid="${s.id}" style="cursor:pointer">
-    <span class="fb-name"${s.active===false?' style="text-decoration:line-through;opacity:.5"':''}>${esc(s.name)}</span>
+  const subRows = fin.subscriptions.map(s=>{
+    const accName = accountLabel(fin,s.accountId);
+    return `<div class="fin-budget-row" data-subid="${s.id}" style="cursor:pointer">
+    <span class="fb-name"${s.active===false?' style="text-decoration:line-through;opacity:.5"':''}>${esc(s.name)}${accName?` <span style="font-size:10px;font-weight:600;color:var(--accent);background:var(--accent-bg);padding:1px 6px;border-radius:4px">${esc(accName)}</span>`:''}</span>
     <span class="fb-amt">${fmtMoney(s.amount)}/mes</span>
-  </div>`).join('');
+  </div>`;
+  }).join('');
 
   // ---- WISH ----
   const wishRows = fin.wishlist.map(w=>`<div class="fin-budget-row" data-wishid="${w.id}" style="cursor:pointer">
@@ -4326,33 +4362,36 @@ function renderFinanzas(){
 
     <button class="btn primary" id="addExpPhotoBtn" style="width:100%;justify-content:center">📷 Registrar gasto con factura</button>
 
-    <div class="fin-wishlist-card"><div class="fin-wishlist-head" id="tIncome">
-      <span class="fin-wishlist-title">💰 Ingresos</span><span class="fin-wishlist-total">${fmtMoney(totalIncome)}</span>${chev(o.income)}
-    </div>${o.income?`<div class="fin-wishlist-body">
+    <div class="fin-wishlist-card">${cardHead("tAccounts","🏦","Cuentas","Dónde vive tu dinero — conecta aquí tus fuentes de ingreso y suscripciones.",fin.accounts.length+" cuentas",o.accounts)}
+    ${o.accounts?`<div class="fin-wishlist-body">
+      ${accountsHTML}
+      <button class="btn sm" id="addAccountBtn" style="width:100%;justify-content:center;margin-top:8px">+ Nueva cuenta</button>
+    </div>`:''}</div>
+
+    <div class="fin-wishlist-card">${cardHead("tIncome","💰","Ingresos","Todo el dinero que entra este mes, por fuente.",fmtMoney(totalIncome),o.income)}
+    ${o.income?`<div class="fin-wishlist-body">
       ${incomeHTML}
       <button class="btn sm" id="addSourceBtn" style="width:100%;justify-content:center;margin-top:8px">+ Nueva fuente de ingreso</button>
     </div>`:''}</div>
 
-    <div class="fin-wishlist-card"><div class="fin-wishlist-head" id="tExpenses">
-      <span class="fin-wishlist-title">🧾 Gastos</span><span class="fin-wishlist-total">${fmtMoney(totalSpent)}</span>${chev(o.expenses)}
-    </div>${o.expenses?`<div class="fin-wishlist-body">
+    <div class="fin-wishlist-card">${cardHead("tExpenses","🧾","Gastos","En qué se fue el dinero, comparado con tu presupuesto por categoría.",fmtMoney(totalSpent),o.expenses)}
+    ${o.expenses?`<div class="fin-wishlist-body">
+      ${totalBudget?`<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Presupuesto total del mes: ${fmtMoney(totalBudget)}</div>`:''}
       ${gastosHTML}
       ${recentExp?'<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:6px">Últimos gastos</div>'+recentExp+'</div>':''}
-      <button class="btn sm" id="addExpManualBtn" style="width:100%;justify-content:center;margin-top:8px">+ Gasto manual</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn sm" id="addExpManualBtn" style="flex:1;justify-content:center">+ Gasto manual</button>
+        <button class="btn sm" id="addBudgetBtn" style="flex:1;justify-content:center">+ Definir presupuesto</button>
+      </div>
     </div>`:''}</div>
 
-    <div class="fin-wishlist-card"><div class="fin-wishlist-head" id="tBudget">
-      <span class="fin-wishlist-title">📊 Presupuesto</span><span class="fin-wishlist-total">${fmtMoney(totalBudget)}</span>${chev(o.budget)}
-    </div>${o.budget?`<div class="fin-wishlist-body">
-      <div class="msub" style="margin-bottom:8px">Cuánto quieres gastar máximo por categoría este mes.</div>
-      ${budgetHTML}
-      <button class="btn sm" id="addBudgetBtn" style="width:100%;justify-content:center;margin-top:8px">+ Categoría</button>
+    <div class="fin-wishlist-card">${cardHead("tSubs","🔄","Suscripciones","Cargos automáticos mensuales — y de qué cuenta salen.",fmtMoney(totalSubs)+"/mes",o.subs)}
+    ${o.subs?`<div class="fin-wishlist-body">${subRows||'<div style="color:var(--muted);font-size:12px;padding:8px 0">Sin suscripciones.</div>'}
+      <button class="btn sm" id="addSubBtn" style="width:100%;justify-content:center;margin-top:8px">+ Suscripción</button>
     </div>`:''}</div>
 
-    <div class="fin-wishlist-card"><div class="fin-wishlist-head" id="tSavings">
-      <span class="fin-wishlist-title">🏦 Ahorro / Inversión</span><span class="fin-wishlist-total">${fmtMoney(fin.savings.reduce((s,x)=>s+(+x.amount||0),0))}</span>${chev(o.savings)}
-    </div>${o.savings?`<div class="fin-wishlist-body">
-      <div class="msub" style="margin-bottom:8px">Dinero inmovilizado: ahorro, inversión fija, plazo fijo. No se cuenta como disponible.</div>
+    <div class="fin-wishlist-card">${cardHead("tSavings","🐷","Ahorro / Inversión","Dinero inmovilizado: ahorro, inversión fija, plazo fijo. No se cuenta como disponible.",fmtMoney(fin.savings.reduce((s,x)=>s+(+x.amount||0),0)),o.savings)}
+    ${o.savings?`<div class="fin-wishlist-body">
       ${fin.savings.length?fin.savings.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(s=>`<div class="fin-budget-row" data-savid="${s.id}" style="cursor:pointer;padding:5px 0">
         <span style="font-size:11px;color:var(--muted);min-width:55px">${(s.date||'').slice(5)||'—'}</span>
         <span class="fb-name" style="font-size:12px">${esc(s.note||'Ahorro')}</span>
@@ -4361,21 +4400,13 @@ function renderFinanzas(){
       <button class="btn sm" id="addSavingsBtn" style="width:100%;justify-content:center;margin-top:8px">+ Depositar ahorro</button>
     </div>`:''}</div>
 
-    <div class="fin-wishlist-card"><div class="fin-wishlist-head" id="tLoans">
-      <span class="fin-wishlist-title">🤝 Préstamos</span><span class="fin-wishlist-total">${fin.loans.filter(l=>!l.paid).length} activos</span>${chev(o.loans)}
-    </div>${o.loans?`<div class="fin-wishlist-body">${loanRows||'<div style="color:var(--muted);font-size:12px;padding:8px 0">Sin préstamos.</div>'}
+    <div class="fin-wishlist-card">${cardHead("tLoans","🤝","Préstamos","Dinero que debes o te deben.",fin.loans.filter(l=>!l.paid).length+" activos",o.loans)}
+    ${o.loans?`<div class="fin-wishlist-body">${loanRows||'<div style="color:var(--muted);font-size:12px;padding:8px 0">Sin préstamos.</div>'}
       <button class="btn sm" id="addLoanBtn" style="width:100%;justify-content:center;margin-top:8px">+ Préstamo</button>
     </div>`:''}</div>
 
-    <div class="fin-wishlist-card"><div class="fin-wishlist-head" id="tSubs">
-      <span class="fin-wishlist-title">🔄 Suscripciones</span><span class="fin-wishlist-total">${fmtMoney(totalSubs)}/mes</span>${chev(o.subs)}
-    </div>${o.subs?`<div class="fin-wishlist-body">${subRows||'<div style="color:var(--muted);font-size:12px;padding:8px 0">Sin suscripciones.</div>'}
-      <button class="btn sm" id="addSubBtn" style="width:100%;justify-content:center;margin-top:8px">+ Suscripción</button>
-    </div>`:''}</div>
-
-    <div class="fin-wishlist-card"><div class="fin-wishlist-head" id="tWish">
-      <span class="fin-wishlist-title">🛍 Wishlist</span><span class="fin-wishlist-total">${fin.wishlist.length} items</span>${chev(o.wish)}
-    </div>${o.wish?`<div class="fin-wishlist-body">${wishRows||'<div style="color:var(--muted);font-size:12px;padding:8px 0">Sin artículos.</div>'}
+    <div class="fin-wishlist-card">${cardHead("tWish","🛍","Wishlist","Cosas que quieres comprar cuando haya presupuesto.",fin.wishlist.length+" items",o.wish)}
+    ${o.wish?`<div class="fin-wishlist-body">${wishRows||'<div style="color:var(--muted);font-size:12px;padding:8px 0">Sin artículos.</div>'}
       <button class="btn sm" id="addWishBtn" style="width:100%;justify-content:center;margin-top:8px">+ Artículo</button>
     </div>`:''}</div>
   </div>`;
@@ -4385,10 +4416,14 @@ function renderFinanzas(){
   document.getElementById("finNext").onclick=()=>{const[y,m]=getFinMonth().split("-").map(Number);const d=new Date(y,m,1);window._finMonth=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");renderFinanzas();};
 
   // TOGGLES
-  ["Income","Expenses","Budget","Savings","Loans","Subs","Wish"].forEach(k=>{
+  ["Accounts","Income","Expenses","Savings","Loans","Subs","Wish"].forEach(k=>{
     const key=k.toLowerCase();
     document.getElementById("t"+k).onclick=()=>{o[key]=!o[key];renderFinanzas();};
   });
+
+  // ACCOUNTS
+  document.getElementById("addAccountBtn")?.addEventListener("click",()=>openAccountModal());
+  document.querySelectorAll("[data-accid]").forEach(el=>el.onclick=()=>openAccountModal(fin.accounts.find(a=>a.id===el.dataset.accid)));
 
   // SAVINGS
   document.getElementById("addSavingsBtn")?.addEventListener("click",()=>openSavingsModal());
@@ -4396,6 +4431,7 @@ function renderFinanzas(){
 
   // INCOME
   document.getElementById("addSourceBtn")?.addEventListener("click",()=>openSourceModal());
+  document.querySelectorAll("[data-srcid]").forEach(el=>el.onclick=(e)=>{e.stopPropagation();openSourceModal(fin.sources.find(s=>s.id===el.dataset.srcid));});
   document.querySelectorAll("[data-adddep]").forEach(el=>el.onclick=(e)=>{e.stopPropagation();openDepositModal(null,el.dataset.adddep);});
   document.querySelectorAll("[data-depid]").forEach(el=>el.onclick=()=>openDepositModal(fin.deposits.find(d=>d.id===el.dataset.depid)));
 
@@ -4404,9 +4440,12 @@ function renderFinanzas(){
   document.getElementById("addExpManualBtn")?.addEventListener("click",()=>openExpenseModal());
   document.querySelectorAll("[data-expid]").forEach(el=>el.onclick=()=>openExpenseModal(fin.expenses.find(e=>e.id===el.dataset.expid)));
 
-  // BUDGET
+  // BUDGET (integrado en Gastos: click en una categoría edita/crea su presupuesto)
   document.getElementById("addBudgetBtn")?.addEventListener("click",()=>openBudgetModal());
-  document.querySelectorAll("[data-budid]").forEach(el=>el.onclick=()=>openBudgetModal(fin.budget.find(b=>b.id===el.dataset.budid)));
+  document.querySelectorAll("[data-budcat]").forEach(el=>el.onclick=()=>{
+    const cat=el.dataset.budcat;
+    openBudgetModal(fin.budget.find(b=>b.category===cat),cat);
+  });
 
   // LOANS
   document.getElementById("addLoanBtn")?.addEventListener("click",()=>openLoanModal());
@@ -4422,17 +4461,49 @@ function renderFinanzas(){
 }
 
 // ---- MODALS ----
+function accountSelectHTML(fin,selectedId,fieldId){
+  const opts = fin.accounts.map(a=>`<option value="${a.id}" ${selectedId===a.id?'selected':''}>${esc(a.name)}</option>`).join('');
+  return `<div class="field"><label>Cuenta (opcional)</label><select id="${fieldId}" style="width:100%;border:1px solid var(--line-strong);border-radius:8px;padding:9px;font:inherit;color:var(--ink);background:var(--bg)">
+    <option value="">— Sin cuenta —</option>${opts}
+  </select></div>`;
+}
+
+function openAccountModal(item){
+  const fin=ensureFinanzas();const isNew=!item;
+  const m=item||{name:"",note:""};
+  openModal(`<h3>${isNew?"Nueva cuenta":"Editar cuenta"}</h3>
+    <div class="msub">Una cuenta representa dónde vive tu dinero (ej: tu cuenta de banco personal). Conecta ahí tus fuentes de ingreso y tus suscripciones para ver su actividad junta.</div>
+    <div class="field"><label>Nombre</label><input type="text" id="accName" value="${esc(m.name)}" placeholder="Diversión / Personal, Ahorros…"></div>
+    <div class="field"><label>Nota (opcional)</label><input type="text" id="accNote" value="${esc(m.note||'')}" placeholder="Banco, últimos dígitos…"></div>
+    <div class="modal-actions">${isNew?'<button class="btn" id="mCancel">Cancelar</button>':'<button class="btn ghost danger" id="mDel">Eliminar</button>'}<button class="btn primary" id="mSave">${isNew?"Crear":"Guardar"}</button></div>`);
+  if($("#mCancel"))$("#mCancel").onclick=closeModal;
+  if($("#mDel"))$("#mDel").onclick=()=>{
+    fin.accounts=fin.accounts.filter(x=>x!==item);
+    fin.sources.forEach(s=>{if(s.accountId===item.id)s.accountId=null;});
+    fin.subscriptions.forEach(s=>{if(s.accountId===item.id)s.accountId=null;});
+    closeModal();save();renderFinanzas();toast("Cuenta eliminada — sus fuentes y suscripciones quedaron sin cuenta");
+  };
+  $("#mSave").onclick=()=>{
+    const name=$("#accName").value.trim();if(!name)return toast("Ponle nombre");
+    const note=$("#accNote").value.trim();
+    if(isNew){fin.accounts.push({id:uid(),name,note});}else{item.name=name;item.note=note;}
+    closeModal();save();renderFinanzas();toast(isNew?"Cuenta creada":"Actualizado");
+  };
+}
+
 function openSourceModal(item){
   const fin=ensureFinanzas();const isNew=!item;
-  const m=item||{name:""};
+  const m=item||{name:"",accountId:""};
   openModal(`<h3>${isNew?"Nueva fuente de ingreso":"Editar fuente"}</h3>
     <div class="field"><label>Nombre</label><input type="text" id="srcName" value="${esc(m.name)}" placeholder="Inherente, RCL, freelance…"></div>
+    ${accountSelectHTML(fin,m.accountId,"srcAccount")}
     <div class="modal-actions">${isNew?'<button class="btn" id="mCancel">Cancelar</button>':'<button class="btn ghost danger" id="mDel">Eliminar</button>'}<button class="btn primary" id="mSave">${isNew?"Crear":"Guardar"}</button></div>`);
   if($("#mCancel"))$("#mCancel").onclick=closeModal;
   if($("#mDel"))$("#mDel").onclick=()=>{fin.sources=fin.sources.filter(x=>x!==item);fin.deposits=fin.deposits.filter(d=>d.sourceId!==item.id);closeModal();save();renderFinanzas();toast("Eliminada");};
   $("#mSave").onclick=()=>{
     const name=$("#srcName").value.trim();if(!name)return toast("Ponle nombre");
-    if(isNew){fin.sources.push({id:uid(),name});}else item.name=name;
+    const accountId=$("#srcAccount").value||null;
+    if(isNew){fin.sources.push({id:uid(),name,accountId});}else{item.name=name;item.accountId=accountId;}
     closeModal();save();renderFinanzas();toast(isNew?"Fuente creada":"Actualizado");
   };
 }
@@ -4479,9 +4550,9 @@ function openExpenseModal(item){
   };
 }
 
-function openBudgetModal(item){
+function openBudgetModal(item,presetCategory){
   const fin=ensureFinanzas();const isNew=!item;
-  const m=item||{category:"",amount:0};
+  const m=item||{category:presetCategory||"",amount:0};
   const catOpts=fin.categories.map(c=>`<option value="${c}" ${m.category===c?'selected':''}>${c}</option>`).join('');
   openModal(`<h3>${isNew?"Nuevo presupuesto":"Editar presupuesto"}</h3>
     <div class="field"><label>Categoría</label><select id="budCat" style="width:100%;border:1px solid var(--line-strong);border-radius:8px;padding:9px;font:inherit;color:var(--ink);background:var(--bg)">${catOpts}</select></div>
@@ -4519,17 +4590,19 @@ function openLoanModal(item){
 
 function openSubscriptionModal(item){
   const fin=ensureFinanzas();const isNew=!item;
-  const m=item||{name:"",amount:0,active:true};
+  const m=item||{name:"",amount:0,active:true,accountId:""};
   openModal(`<h3>${isNew?"Nueva suscripción":"Editar suscripción"}</h3>
     <div class="field"><label>Nombre</label><input type="text" id="subName" value="${esc(m.name)}"></div>
     <div class="field"><label>Monto mensual (Q)</label><input type="number" id="subAmt" value="${m.amount}" min="0"></div>
+    ${accountSelectHTML(fin,m.accountId,"subAccount")}
     <div class="modal-actions">${isNew?'<button class="btn" id="mCancel">Cancelar</button>':'<button class="btn ghost danger" id="mDel">Eliminar</button>'}<button class="btn primary" id="mSave">${isNew?"Agregar":"Guardar"}</button></div>`);
   if($("#mCancel"))$("#mCancel").onclick=closeModal;
   if($("#mDel"))$("#mDel").onclick=()=>{fin.subscriptions=fin.subscriptions.filter(x=>x!==item);closeModal();save();renderFinanzas();toast("Eliminada");};
   $("#mSave").onclick=()=>{
     const name=$("#subName").value.trim();if(!name)return toast("Nombre");
-    if(isNew){fin.subscriptions.push({id:uid(),name,amount:+$("#subAmt").value||0,active:true});}
-    else{item.name=name;item.amount=+$("#subAmt").value||0;}
+    const accountId=$("#subAccount").value||null;
+    if(isNew){fin.subscriptions.push({id:uid(),name,amount:+$("#subAmt").value||0,active:true,accountId});}
+    else{item.name=name;item.amount=+$("#subAmt").value||0;item.accountId=accountId;}
     closeModal();save();renderFinanzas();toast(isNew?"Agregada":"Actualizado");
   };
 }
